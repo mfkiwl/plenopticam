@@ -166,6 +166,7 @@ Depending on provided files and settings, your results folder may contain the fo
 
     - sub-aperture images (see *viewpoints_xxx* folder) and view animation given as gif
     - refocused images (see *refo_xxx* folder) and refocus animation given as gif
+    - depth map given as pfm and ply file
     - raw image file given as tiff
     - aligned light field as pkl (pickle) file
     - light field metadata as json file (for Lytro files only)
@@ -257,15 +258,15 @@ Further information
 
 .. |src_lfp| raw:: html
 
-    <img src="https://raw.githubusercontent.com/hahnec/color-matcher/master/test/data/view_animation_7px.gif" width="200px" max-width:"100%">
+    <img src="https://raw.githubusercontent.com/hahnec/color-matcher/master/tests/data/view_animation_7px.gif" width="200px" max-width:"100%">
 
 .. |ref_lfp| raw:: html
 
-    <img src="https://raw.githubusercontent.com/hahnec/color-matcher/master/test/data/bee_2.png" width="200px" max-width:"100%">
+    <img src="https://raw.githubusercontent.com/hahnec/color-matcher/master/tests/data/bee_2.png" width="200px" max-width:"100%">
 
 .. |res_lfp| raw:: html
 
-    <img src="https://raw.githubusercontent.com/hahnec/color-matcher/master/test/data/view_animation_7px_hm-mkl-hm.gif" width="200px" max-width:"100%">
+    <img src="https://raw.githubusercontent.com/hahnec/color-matcher/master/tests/data/view_animation_7px_hm-mkl-hm.gif" width="200px" max-width:"100%">
 
 .. |opex_demo| raw:: html
 

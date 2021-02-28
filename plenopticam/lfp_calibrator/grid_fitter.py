@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.optimize import leastsq
 
 
 class GridFitter(object):
@@ -10,13 +11,16 @@ class GridFitter(object):
         self.cfg = kwargs['cfg'] if 'cfg' in kwargs else None
         self.sta = kwargs['sta'] if 'sta' in kwargs else None
 
-        self._grid_fit = list()
+        self._grid_fit = np.array([])
+        self._sub_fit_opt = False
 
         # take coordinates as input argument
         if 'coords_list' in kwargs:
             self._coords_list = np.asarray(kwargs['coords_list'])
+            self._ptc_mean = np.mean(np.abs(np.diff(self._coords_list[self._coords_list[:, 2] == 0][:, 1])))
         elif self.cfg.mic_list in self.cfg.calibs:
             self._coords_list = np.asarray(self.cfg.calibs[self.cfg.mic_list])
+            self._ptc_mean = self.cfg.calibs[self.cfg.ptc_mean]
         else:
             raise BaseException('Coordinate list not provided.')
 
@@ -24,108 +28,159 @@ class GridFitter(object):
             self._MAX_Y = int(max(self._coords_list[:, 2])+1)   # add one to compensate for index zero
             self._MAX_X = int(max(self._coords_list[:, 3])+1)   # add one to compensate for index zero
             self._pat_type = self.cfg.calibs[self.cfg.pat_type] if self.cfg.pat_type in self.cfg.calibs else 'rec'
+            self._arr_shape = np.array(kwargs['arr_shape']) if 'arr_shape' in kwargs else np.array([0, 0])
+            self._hex_odd = self.estimate_hex_odd(self._coords_list) if self._pat_type == 'hex' else 0
+            self._coords_parx = list()
 
-    def main(self, deg=1):
+    def main(self):
 
-        #
-        if self._pat_type == 'rec' and self._MAX_Y > 3 and self._MAX_X > 3 or self._MAX_Y > 5 and self._MAX_X > 5:
-            self.comp_grid_fit(deg=deg)
+        # exclude centroids lying at the borders for improved fitting
+        if self._sub_fit_opt and self._MAX_Y > 9 and self._MAX_X > 9:
+            div = 4.5
+            y_lim, x_lim = [self._MAX_Y/div, self._MAX_X/div]
+            centroids_parax = self._coords_list[(self._coords_list[:, 2] > y_lim) &
+                                                (self._coords_list[:, 3] > x_lim) &
+                                                (self._coords_list[:, 2] < self._MAX_Y - y_lim) &
+                                                (self._coords_list[:, 3] < self._MAX_X - x_lim)]
+
+        # check for minimum grid resolution
+        elif self._pat_type == 'rec' and self._MAX_Y > 3 and self._MAX_X > 3 or self._MAX_Y > 5 and self._MAX_X > 5:
+            self.comp_grid_fit()
         else:
-            print('Skip grid fitting as number of micro lens number too little')
+            print('Skip grid fitting as grid point number is too little')
             self._grid_fit = np.array(self._coords_list)
+
+        if hasattr(self, 'cfg') and hasattr(self.cfg, 'calibs'):
+            self.cfg.calibs[self.cfg.mic_list] = self._grid_fit
 
         return True
 
-    def comp_grid_fit(self, deg=1):
+    def comp_grid_fit(self):
         """ perform fitting for two dimensional grid coordinates """
 
         # print status
-        self.sta.status_msg('Grid fitting', self.cfg.params[self.cfg.opt_prnt])
+        self.sta.status_msg('Grid fitting', self.cfg.params[self.cfg.opt_prnt]) if self.sta else None
 
-        odd = 0     # hexagonal shift direction
+        # initials fit parameters
+        cy_s, cx_s = self._arr_shape/2 if hasattr(self, '_arr_shape') else [0, 0]
+        sy_s, sx_s = [self._ptc_mean]*2 if hasattr(self, '_ptc_mean') else [1, 1]
+        theta = 0
 
-        # iterate through rows
-        for ly in range(self._MAX_Y):
+        # LMA fit: executes least-squares regression analysis to optimize initial parameters
+        coeffs, _ = leastsq(self.obj_fun, [cy_s, cx_s, sy_s, sx_s, theta], args=(self._coords_list))
 
-            # check interrupt status
-            if self.sta.interrupt:
+        # obtain fitted grid from final estimates
+        self._grid_fit = self.adjust_grid(coeffs[0], coeffs[1], coeffs[2], coeffs[3], coeffs[4])
+
+        # print status
+        self.sta.progress(100, opt=self.cfg.params[self.cfg.opt_prnt]) if self.sta else None
+
+        return np.array(self._grid_fit)
+
+    def obj_fun(self, p, centroids):
+
+        grid = self.adjust_grid(cy=p[0], cx=p[1], sy=p[2], sx=p[3], theta=p[4])
+        try:
+            sqr_loss = np.sum((centroids[:, :2] - grid[:, :2]) ** 2, axis=1)
+        except ValueError:
+            err_msg = 'Grid fitting index mismatch'
+            if self.sta is None:
+                raise Exception(err_msg)
+            else:
+                self.sta.status_msg(err_msg, True)
+                self.sta.error = True
                 return False
 
-            # fit line of all coordinates in current row
-            coords_row = self._coords_list[self._coords_list[:, 2] == ly][:, :2]
-            coeffs_hor = self.line_fitter(coords_row, axis=1, deg=deg)
+        return sqr_loss
 
-            # iterate through column
-            for lx in range(self._MAX_X):
+    def adjust_grid(self, cy=0, cx=0, sy=1, sx=1, theta=0):
 
-                # select coordinates
-                coords_col = self._coords_list[self._coords_list[:, 3] == lx][:, :2]
+        # generate
+        grid = self.grid_gen()
 
-                # consider hexagonal pattern
-                if self._pat_type == 'hex':
-                    # fit line of current column coordinates (omit every other coordinate pair)
-                    coeffs_ver = self.line_fitter(coords_col[odd::2], axis=1, deg=deg)
+        # scale
+        grid[:, 0] *= sy
+        grid[:, 1] *= sx
 
-                else:
-                    # fit line of current column coordinates
-                    coeffs_ver = self.line_fitter(coords_col, axis=1, deg=deg)
+        # rotate
+        grid = self.rotate_grid(grid=grid, rota_rad=theta)
 
-                # compute intersection of row and column line
-                new_coords = list(self.line_intersect(coeffs_hor, coeffs_ver))
+        # translate
+        grid[:, :2] += np.array([cy, cx])
 
-                # original reference coordinate
-                ref_coords = self._coords_list[(self._coords_list[:, 2] == ly) & (self._coords_list[:, 3] == lx)]
+        return grid
 
-                # put result to new coordinate list (if reference exists)
-                self._grid_fit.append(new_coords + [ly, lx]) if ref_coords.size != 0 else None
+    def grid_gen(self):
+        """ generate grid of points """
 
-            # switch hexagonal shift direction
-            odd = not odd if self._pat_type == 'hex' else odd
+        if self._pat_type == 'rec' or self._pat_type == 'hex':
 
-            # print progress status
-            percentage = (ly + 1) / self._MAX_Y * 100
-            self.sta.progress(percentage, opt=self.cfg.params[self.cfg.opt_prnt]) if self.sta else None
+            # create point coordinates
+            y_range = np.linspace(0, 1, self._MAX_Y)
+            x_range = np.linspace(0, 1, self._MAX_X)
+            y_grid, x_grid = np.meshgrid(y_range, x_range)
 
-        self._grid_fit = np.array(self._grid_fit)
+            # create point index labels
+            y_idcs, x_idcs = np.meshgrid(np.linspace(0, self._MAX_Y-1, self._MAX_Y),
+                                         np.linspace(0, self._MAX_X-1, self._MAX_X))
 
-        return self._grid_fit
+            # shift rows horizontally if grid is hexagonal
+            if self._pat_type == 'hex':
+                # vertical shrinkage
+                y_grid *= np.sqrt(3) / 2
+                # horizontal hex shifting
+                x_grid[:, int(self._hex_odd)::2] += .5/(self._MAX_X-1)
 
-    @staticmethod
-    def line_intersect(coeffs_hor, coeffs_ver):
-        """ compute line intersection based on Vandermonde algebra """
+            if True:
+                # normalize grid to max-length 1
+                norm_div = max(x_grid.max(), y_grid.max())
+                y_grid /= norm_div
+                x_grid /= norm_div
 
-        deg = len(coeffs_hor)-1 if len(coeffs_hor) == len(coeffs_ver) else 0
+                # put grid to origin
+                y_grid -= y_grid.max()/2
+                x_grid -= x_grid.max()/2
 
-        if deg < 3:
-            # intersection of linear functions
-            matrix = np.array([[1, *-coeffs_hor[1:]], [1, *-coeffs_ver[1:]]])
-            vector = np.array([coeffs_hor[0], coeffs_ver[0]])
+            pts_arr = np.vstack(np.dstack([y_grid.T, x_grid.T, y_idcs.T, x_idcs.T]))
+
         else:
-            # intersection of non-linear functions
-            raise BaseException('Function with degree %s is not supported' % deg)
+            err_msg = 'Grid pattern type not recognized.'
+            if self.sta is None:
+                raise Exception(err_msg)
+            else:
+                self.sta.status_msg(err_msg, True)
+                self.sta.error = True
+                return False
 
-        return np.dot(np.linalg.pinv(matrix), vector)
-
-    def line_fitter(self, coords, axis=0, deg=1):
-        """ estimate equation fit of 2-D coordinates belonging to the same row or column via least squares method """
-
-        # feed into system of equations
-        A = self.compose_vandermonde_1d(coords[:, axis], deg=deg)
-        b = coords[:, 1-axis]
-
-        # solve for a least squares estimate via pseudo inverse and coefficients in b
-        coeffs = np.dot(np.linalg.pinv(A), b)
-
-        return coeffs
+        return pts_arr
 
     @staticmethod
-    def compose_vandermonde_1d(x, deg=1):
-        if deg == 1:
-            return np.array([np.ones(len(x)), x]).T
-        elif deg == 2:
-            return np.array([np.ones(len(x)), x, x ** 2]).T
-        elif deg == 3:
-            return np.array([np.ones(len(x)), x, x ** 2, x ** 3]).T
+    def estimate_hex_odd(coords_list):
+
+        # find smallest lens indices (more robust than finding lens index zero)
+        min_idx_y, min_idx_x = min(coords_list[:, 2]), min(coords_list[:, 3])
+
+        # take the most upper two points in hexagonal grid
+        pt_00 = coords_list[(coords_list[:, 3] == min_idx_x) & (coords_list[:, 2] == min_idx_y)][0]
+        pt_10 = coords_list[(coords_list[:, 3] == min_idx_x) & (coords_list[:, 2] == min_idx_y + 1)][0]
+
+        # compare x-coordinates to determine the direction of heaxgonal shift alternation
+        hex_odd = 1 if pt_00[1] < pt_10[1] else 0
+
+        return hex_odd
+
+    @staticmethod
+    def rotate_grid(grid, rota_rad=0):
+        """ transformation of centroids via translation and rotation """
+
+        # matrix for counter-clockwise rotation around z-axis
+        Rz = np.array([[np.cos(rota_rad), -np.sin(rota_rad)], [np.sin(rota_rad), np.cos(rota_rad)]])
+        # Rz = np.array([[np.cos(self._rad), np.sin(self._rad)], [-np.sin(self._rad), np.cos(self._rad)]]) #clock-wise
+
+        # rotate data points around z-axis
+        grid[:, :2] = np.dot(Rz, grid[:, :2].T).T
+
+        return grid
 
     @property
     def grid_fit(self):
