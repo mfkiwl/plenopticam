@@ -23,7 +23,6 @@ __license__ = """
 # external
 from color_space_converter import rgb2gry
 
-
 # local imports
 from plenopticam.lfp_calibrator.pitch_estimator import PitchEstimator
 from plenopticam.lfp_calibrator.centroid_extractor import CentroidExtractor
@@ -93,12 +92,16 @@ class LfpCalibrator(object):
         del obj
 
         # fit grid of MICs using least-squares method to obtain accurate MICs from line intersections
-        if self.cfg.params[self.cfg.cal_meth] in c.CALI_METH[1:3] and not self.sta.interrupt:
-            self.cfg.calibs[self.cfg.pat_type] = pattern
-            obj = GridFitter(coords_list=mic_list, cfg=self.cfg, sta=self.sta)
+        if self.cfg.params[self.cfg.cal_meth] in c.CALI_METH[2:4] and not self.sta.interrupt:
+            obj = GridFitter(coords_list=mic_list, cfg=self.cfg, sta=self.sta, arr_shape=self._wht_img.shape,
+                             pat_type=pattern, penalty_enable=self.cfg.params[self.cfg.cal_meth] == c.CALI_METH[3])
             obj.main()
             mic_list = obj.grid_fit
             del obj
+
+        # attach calibration results to config object
+        for kw, data in zip([self.cfg.mic_list, self.cfg.pat_type, self.cfg.ptc_mean], [mic_list, pattern, pitch]):
+            self.cfg.calibs[kw] = data
 
         # save calibration metadata
         self.sta.status_msg('Save calibration data', opt=self.cfg.params[self.cfg.opt_prnt])

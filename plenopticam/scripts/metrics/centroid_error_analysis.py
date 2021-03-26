@@ -5,6 +5,8 @@ from plenopticam.cfg import PlenopticamConfig, constants
 import numpy as np
 import matplotlib.pyplot as plt
 from color_space_converter import rgb2gry
+import os
+import zipfile
 
 # Text rendering with LaTeX
 from matplotlib import rc
@@ -18,14 +20,22 @@ cfg = PlenopticamConfig()
 sta = PlenopticamStatus()
 
 # file settings
-fname = './c'
-cfg.params[cfg.cal_path] = fname + '.png'
-cfg.params[cfg.cal_meth] = constants.CALI_METH[2]   #'peak'   #
+fname = 'd'
+CEA_PATH = os.path.join('..', '..', '..', 'examples', 'data', 'synth_spots')
+
+# extract zip archive
+with zipfile.ZipFile(CEA_PATH + '.zip', 'r') as zip_obj:
+    zip_obj.extractall(CEA_PATH)
+
+# calibration settings
+cfg.params[cfg.cal_path] = os.path.join(CEA_PATH, fname + '.png')
+cfg.params[cfg.cal_meth] = constants.CALI_METH[2]
 wht_img = load_img_file(cfg.params[cfg.cal_path])
-crop = True
+crop = False
+plt_idx = False
 
 # load ground truth (remove outlying centers)
-spots_grnd_trth = np.loadtxt(fname + '.txt')
+spots_grnd_trth = np.loadtxt(os.path.join(CEA_PATH, fname + '.txt'))
 spots_grnd_trth = spots_grnd_trth[spots_grnd_trth[:, 1] > 0]
 spots_grnd_trth = spots_grnd_trth[spots_grnd_trth[:, 0] > 0]
 spots_grnd_trth = spots_grnd_trth[spots_grnd_trth[:, 1] < wht_img.shape[1]]
@@ -70,7 +80,7 @@ srt_mics = np.array(mic_list)
 # fit grid of MICs using least-squares method to obtain accurate MICs from line intersections
 if cfg.params[cfg.cal_meth] == c.CALI_METH[2]:
     cfg.calibs[cfg.pat_type] = pattern
-    obj = GridFitter(coords_list=mic_list, cfg=cfg, sta=sta)
+    obj = GridFitter(coords_list=mic_list, cfg=cfg, sta=sta, arr_shape=wht_img.shape)
     obj.main()
     mic_list = obj.grid_fit
     del obj
@@ -87,7 +97,7 @@ plt.plot(fit_mics[:, 1], fit_mics[:, 0], 'kx', label=r'\textsc{GridFitter}') if 
 plt.legend(loc='upper right')
 
 # plot micro image indices
-if True:
+if plt_idx:
     str_list = list(zip(list(map(str, srt_mics[:, 2].astype('int'))), list(map(str, srt_mics[:, 3].astype('int')))))
     labels = ['('+s1+', '+s2+')' for s1, s2 in str_list]
     for x, y, s in zip(srt_mics[:, 1]-40, srt_mics[:, 0]-20, labels):
@@ -106,7 +116,6 @@ if crop:
 
 # save figure
 plt.savefig(fname+".pdf", bbox_inches="tight")
-#plt.savefig(fname+".pgf", bbox_inches="tight")
 plt.show()
 
 # quantitative centroid error analysis
